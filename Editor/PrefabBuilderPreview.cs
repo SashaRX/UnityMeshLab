@@ -578,6 +578,7 @@ namespace SashaRX.UnityMeshLab
             {
                 if (b.meshFilter == null) continue;
                 b.meshFilter.sharedMesh = b.originalMesh;
+                CheckerTexturePreview.ReleasePreviewMeshOverride(b.meshFilter);
                 var mr = b.meshFilter.GetComponent<MeshRenderer>();
                 if (mr != null)
                 {

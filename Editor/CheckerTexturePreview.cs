@@ -227,6 +227,13 @@ namespace SashaRX.UnityMeshLab
         /// (tool overlays or vertex-color previews) that should not be
         /// serialized into scenes, prefabs, or FBX exports.
         /// </summary>
+        internal static bool IsPreviewShader(string shaderName)
+        {
+            if (string.IsNullOrEmpty(shaderName)) return false;
+            return shaderName.Equals(VertexColorShader, System.StringComparison.OrdinalIgnoreCase)
+                || shaderName.StartsWith(ToolShaderPrefix, System.StringComparison.OrdinalIgnoreCase);
+        }
+
         /// <summary>
         /// After a preview put the renderer's materials back: a record of the renderer taken while
         /// the preview was on (an Undo record or a prefab-modification record by any tool) left the
@@ -235,29 +242,53 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         /// <param name="preview">The preview's own material when its shader is not a tool shader.</param>
         internal static void ReleasePreviewOverrides(Renderer renderer, Material preview = null)
+            => ReleaseOverrides(renderer,
+                (path, value) => value is Material material && (material == preview
+                    || (material.shader != null && IsPreviewShader(material.shader.name))) && TryMaterialSlot(path, out _),
+                (component, path) => TryMaterialSlot(path, out int slot) && slot < ((Renderer)component).sharedMaterials.Length
+                    ? ((Renderer)component).sharedMaterials[slot] : null);
+
+        /// <summary>
+        /// The same for the mesh a preview showed: a record of the filter (or skinned renderer)
+        /// taken while the preview's mesh was on it left that mesh as the instance's override.
+        /// </summary>
+        /// <param name="preview">The preview's mesh when it is not a temporary one (DontSave, not an asset).</param>
+        internal static void ReleasePreviewMeshOverride(Component meshHolder, Mesh preview = null)
         {
-            if (renderer == null || !PrefabUtility.IsPartOfPrefabInstance(renderer)) return;
+            if (!(meshHolder is MeshFilter) && !(meshHolder is SkinnedMeshRenderer)) return;
+            ReleaseOverrides(meshHolder,
+                (path, value) => path == "m_Mesh" && value is Mesh mesh
+                    && (mesh == preview || (!EditorUtility.IsPersistent(mesh) && (mesh.hideFlags & HideFlags.DontSaveInEditor) != 0)),
+                (component, path) => component is MeshFilter filter ? filter.sharedMesh : ((SkinnedMeshRenderer)component).sharedMesh);
+        }
+
+        // Rewrites the instance's overrides of one component that point at a preview object:
+        // each takes the component's current value again, or is dropped where that is the source's.
+        static void ReleaseOverrides(Component component, System.Func<string, Object, bool> leaked,
+            System.Func<Component, string, Object> valueAt)
+        {
+            if (component == null || !PrefabUtility.IsPartOfPrefabInstance(component)) return;
             // A restore finishes whatever this finds: the caller still has meshes to put back.
             try
             {
                 // Read and written on the same instance, so every other modification is kept as read.
-                var root = PrefabUtility.GetOutermostPrefabInstanceRoot(renderer);
-                var source = PrefabUtility.GetCorrespondingObjectFromSource(renderer);
+                var root = PrefabUtility.GetOutermostPrefabInstanceRoot(component);
+                var source = PrefabUtility.GetCorrespondingObjectFromSource(component);
                 var modifications = root == null ? null : PrefabUtility.GetPropertyModifications(root);
                 if (source == null || modifications == null) return;
-                var live = renderer.sharedMaterials;
-                var own = source.sharedMaterials;
                 var kept = new List<PropertyModification>(modifications.Length);
                 bool changed = false;
                 foreach (var modification in modifications)
                 {
-                    if (modification.target == source && modification.objectReference is Material material && material != null
-                        && (material == preview || (material.shader != null && IsPreviewShader(material.shader.name)))
-                        && TryMaterialSlot(modification.propertyPath, out int slot))
+                    // A destroyed object is never taken for the preview's own.
+                    if (modification.target == source && modification.objectReference != null
+                        && leaked(modification.propertyPath, modification.objectReference))
                     {
+                        var restored = valueAt(component, modification.propertyPath);
+                        // Still showing the preview: its own restore did not put a value back.
+                        if (restored != null && leaked(modification.propertyPath, restored)) { kept.Add(modification); continue; }
                         changed = true;
-                        var restored = slot < live.Length ? live[slot] : null;
-                        if (slot < own.Length && restored == own[slot]) continue;
+                        if (restored == valueAt(source, modification.propertyPath)) continue;
                         modification.objectReference = restored;
                     }
                     kept.Add(modification);
@@ -266,7 +297,7 @@ namespace SashaRX.UnityMeshLab
             }
             catch (System.Exception ex)
             {
-                UvtLog.Warn($"[Preview] '{renderer.name}': its prefab overrides could not be checked for a preview material ({ex.Message}).");
+                UvtLog.Warn($"[Preview] '{component.name}': its prefab overrides could not be checked for a preview object ({ex.Message}).");
             }
         }
 
@@ -276,13 +307,6 @@ namespace SashaRX.UnityMeshLab
             slot = -1;
             return propertyPath.StartsWith(prefix, System.StringComparison.Ordinal) && propertyPath.EndsWith("]", System.StringComparison.Ordinal)
                 && int.TryParse(propertyPath.Substring(prefix.Length, propertyPath.Length - prefix.Length - 1), out slot);
-        }
-
-        internal static bool IsPreviewShader(string shaderName)
-        {
-            if (string.IsNullOrEmpty(shaderName)) return false;
-            return shaderName.Equals(VertexColorShader, System.StringComparison.OrdinalIgnoreCase)
-                || shaderName.StartsWith(ToolShaderPrefix, System.StringComparison.OrdinalIgnoreCase);
         }
 
         // ── Generated assets ──
@@ -420,6 +444,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (b.meshFilter != null && b.origMesh != null && b.meshFilter.sharedMesh == b.previewMesh)
                     b.meshFilter.sharedMesh = b.origMesh;
+                if (b.meshFilter != null) ReleasePreviewMeshOverride(b.meshFilter, b.previewMesh);
             }
             backups.Clear();
             isActive = false;

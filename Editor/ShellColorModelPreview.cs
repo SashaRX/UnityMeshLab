@@ -188,6 +188,8 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (b.meshFilter != null && b.meshFilter.sharedMesh == b.tempMesh) b.meshFilter.sharedMesh = b.origMeshFilterMesh;
                 if (b.skinnedRenderer != null && b.skinnedRenderer.sharedMesh == b.tempMesh) b.skinnedRenderer.sharedMesh = b.origSkinnedMesh;
+                CheckerTexturePreview.ReleasePreviewMeshOverride(b.meshFilter, b.tempMesh);
+                CheckerTexturePreview.ReleasePreviewMeshOverride(b.skinnedRenderer, b.tempMesh);
                 if (b.tempMesh != null) Object.DestroyImmediate(b.tempMesh);
             }
 

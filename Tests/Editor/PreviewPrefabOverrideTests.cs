@@ -112,6 +112,32 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void CheckerRestoreLeavesNoPreviewMeshOverride()
+        {
+            var filter = instance.GetComponent<MeshFilter>();
+            var authoredMesh = filter.sharedMesh;
+            var previewMesh = Object.Instantiate(authoredMesh);
+            try
+            {
+                CheckerTexturePreview.Apply(new System.Collections.Generic.List<(Renderer, Mesh)> { (Renderer, previewMesh) });
+                Undo.RecordObject(filter, "Edit while previewed");
+                PrefabUtility.RecordPrefabInstancePropertyModifications(filter);
+                var source = PrefabUtility.GetCorrespondingObjectFromSource(filter);
+                bool MeshOverride(Object value) => PrefabUtility.GetPropertyModifications(instance)
+                    .Any(m => m.target == source && m.propertyPath == "m_Mesh" && m.objectReference == value);
+                Assert.IsTrue(MeshOverride(previewMesh), "The record must have taken the preview mesh (the leak this guards).");
+
+                CheckerTexturePreview.Restore();
+
+                Assert.AreEqual(authoredMesh, filter.sharedMesh);
+                Assert.IsFalse(MeshOverride(previewMesh), "No override keeps the preview's mesh.");
+                Assert.IsFalse(PrefabUtility.GetPropertyModifications(instance).Any(m => m.target == source && m.propertyPath == "m_Mesh"),
+                    "The prefab's own mesh keeps no override.");
+            }
+            finally { Object.DestroyImmediate(previewMesh); }
+        }
+
+        [Test]
         public void RestoreWithoutALeakChangesNoModification()
         {
             CheckerTexturePreview.Apply(new System.Collections.Generic.List<(Renderer, Mesh)> { (Renderer, null) });

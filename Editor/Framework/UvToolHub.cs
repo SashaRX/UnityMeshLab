@@ -2284,6 +2284,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (b.meshFilter != null && b.origMesh != null && b.meshFilter.sharedMesh == b.tempMesh)
                     b.meshFilter.sharedMesh = b.origMesh;
+                CheckerTexturePreview.ReleasePreviewMeshOverride(b.meshFilter, b.tempMesh);
                 if (b.tempMesh != null) DestroyImmediate(b.tempMesh);
                 if (b.tempMat != null) DestroyImmediate(b.tempMat);
             }
