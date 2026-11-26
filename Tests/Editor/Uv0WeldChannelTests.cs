@@ -1,6 +1,8 @@
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace SashaRX.UnityMeshLab.Tests
 {
@@ -78,6 +80,67 @@ namespace SashaRX.UnityMeshLab.Tests
                 mesh.GetUVs(2, kept);
                 Assert.AreEqual(4, kept.Count, "UV2 survives the weld.");
                 foreach (var v in kept) Assert.AreEqual(7f, v.z, "UV2's third component survives the weld.");
+            }
+            finally { Object.DestroyImmediate(mesh); }
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct PackedVertex
+        {
+            public Vector3 position;
+            public Vector3 normal;
+            public Vector2 uv0;
+            public float uv3;
+            public ushort uv4x, uv4y;
+        }
+
+        [Test]
+        public void AWeldKeepsAScalarAndAHalfUvChannelsLayout()
+        {
+            var layout = new[]
+            {
+                new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3),
+                new VertexAttributeDescriptor(VertexAttribute.Normal, VertexAttributeFormat.Float32, 3),
+                new VertexAttributeDescriptor(VertexAttribute.TexCoord0, VertexAttributeFormat.Float32, 2),
+                new VertexAttributeDescriptor(VertexAttribute.TexCoord3, VertexAttributeFormat.Float32, 1),
+                new VertexAttributeDescriptor(VertexAttribute.TexCoord4, VertexAttributeFormat.Float16, 2),
+            };
+            var positions = new[] { new Vector3(0, 0, 0), new Vector3(1, 0, 0), new Vector3(1, 0, 1),
+                                    new Vector3(0, 0, 0), new Vector3(1, 0, 1), new Vector3(0, 0, 1) };
+            var uv0 = new[] { new Vector2(0, 0), new Vector2(1, 0), new Vector2(1, 1),
+                              new Vector2(0, 0), new Vector2(1, 1), new Vector2(0, 1) };
+            // Vertices 3 and 4 repeat 0 and 2 in every channel: a false seam.
+            float[] scalar = { .25f, .5f, .75f, .25f, .75f, 1f };
+            var vertices = new PackedVertex[6];
+            for (int i = 0; i < 6; i++)
+                vertices[i] = new PackedVertex
+                {
+                    position = positions[i], normal = Vector3.up, uv0 = uv0[i], uv3 = scalar[i],
+                    uv4x = Mathf.FloatToHalf(scalar[i]), uv4y = Mathf.FloatToHalf(1f - scalar[i]),
+                };
+            var mesh = new Mesh();
+            mesh.SetVertexBufferParams(6, layout);
+            mesh.SetVertexBufferData(vertices, 0, 0, 6);
+            mesh.triangles = new[] { 0, 2, 1, 3, 5, 4 };
+            try
+            {
+                Assert.IsTrue(Uv0Analyzer.WeldInPlace(mesh));
+                Assert.AreEqual(4, mesh.vertexCount);
+                Assert.AreEqual(1, mesh.GetVertexAttributeDimension(VertexAttribute.TexCoord3), "The scalar channel stays scalar.");
+                Assert.AreEqual(VertexAttributeFormat.Float16, mesh.GetVertexAttributeFormat(VertexAttribute.TexCoord4),
+                    "The half channel stays half.");
+
+                var weldedPositions = mesh.vertices;
+                var kept = new List<Vector4>();
+                mesh.GetUVs(3, kept);
+                var half = new List<Vector2>();
+                mesh.GetUVs(4, half);
+                for (int i = 0; i < weldedPositions.Length; i++)
+                {
+                    int authored = System.Array.IndexOf(positions, weldedPositions[i]);
+                    Assert.AreEqual(scalar[authored], kept[i].x, 1e-6f, $"UV3 of vertex {i}.");
+                    Assert.AreEqual(scalar[authored], half[i].x, 1e-3f, $"UV4.x of vertex {i}.");
+                }
             }
             finally { Object.DestroyImmediate(mesh); }
         }

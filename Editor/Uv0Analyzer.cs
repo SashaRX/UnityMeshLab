@@ -1178,6 +1178,8 @@ namespace SashaRX.UnityMeshLab
         {
             readonly List<Vector4>[] uvs = new List<Vector4>[8];
             readonly int[] dimensions = new int[8];
+            // A channel SetUVs cannot write back as it was (one component, or not Float32) keeps its bytes.
+            readonly MeshAccess.RawVertexAttribute[] raw = new MeshAccess.RawVertexAttribute[8];
             readonly Vector4[] tangents;
             readonly Color[] colors;
             readonly BoneWeight[] boneWeights;
@@ -1194,6 +1196,8 @@ namespace SashaRX.UnityMeshLab
                     if (list.Count != count) continue;
                     uvs[ch] = list;
                     dimensions[ch] = mesh.GetVertexAttributeDimension(attribute);
+                    if (MeshAccess.RawVertexAttribute.NeedsRaw(mesh, attribute))
+                        raw[ch] = MeshAccess.RawVertexAttribute.Capture(mesh, attribute);
                 }
                 var t = mesh.tangents;
                 if (t != null && t.Length == count) tangents = t;
@@ -1220,7 +1224,8 @@ namespace SashaRX.UnityMeshLab
                 {
                     var src = uvs[ch];
                     if (src == null) continue;
-                    // SetUVs has no one-component form: such a channel comes back with two.
+                    // SetUVs has no one-component form: such a channel is written with two, then
+                    // takes its own layout back below.
                     switch (dimensions[ch])
                     {
                         case 1:
@@ -1232,6 +1237,8 @@ namespace SashaRX.UnityMeshLab
                 if (tangents != null) target.tangents = Compact(tangents, compactMap, newCount);
                 if (colors != null) target.colors = Compact(colors, compactMap, newCount);
                 if (boneWeights != null) target.boneWeights = Compact(boneWeights, compactMap, newCount);
+                for (int ch = 0; ch < 8; ch++)
+                    raw[ch]?.Compacted(compactMap, newCount).Restore(target);
             }
 
             static List<T> Compact<T>(List<Vector4> src, int[] compactMap, int newCount, Func<Vector4, T> convert)
