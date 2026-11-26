@@ -63,6 +63,15 @@ namespace SashaRX.UnityMeshLab.Tests
                 var lightmap = new List<Vector2>();
                 mesh.GetUVs(1, lightmap);
                 Assert.AreEqual(4, lightmap.Count, "UV1 survives the weld.");
+                // Each kept vertex keeps the lightmap coordinate authored at its corner.
+                var positions = mesh.vertices;
+                var authoredPositions = new[] { new Vector3(0, 0, 0), new Vector3(1, 0, 0), new Vector3(1, 0, 1),
+                                                new Vector3(0, 0, 0), new Vector3(1, 0, 1), new Vector3(0, 0, 1) };
+                for (int i = 0; i < positions.Length; i++)
+                {
+                    int authored = System.Array.IndexOf(authoredPositions, positions[i]);
+                    Assert.AreEqual(SharedLightmap[authored], lightmap[i], $"UV1 of vertex {i}.");
+                }
                 Assert.AreEqual(3, mesh.GetVertexAttributeDimension(UnityEngine.Rendering.VertexAttribute.TexCoord2),
                     "UV2 keeps its dimension.");
                 var kept = new List<Vector3>();

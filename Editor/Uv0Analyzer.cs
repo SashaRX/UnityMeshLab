@@ -1220,8 +1220,10 @@ namespace SashaRX.UnityMeshLab
                 {
                     var src = uvs[ch];
                     if (src == null) continue;
+                    // SetUVs has no one-component form: such a channel comes back with two.
                     switch (dimensions[ch])
                     {
+                        case 1:
                         case 2: target.SetUVs(ch, Compact(src, compactMap, newCount, v => (Vector2)v)); break;
                         case 3: target.SetUVs(ch, Compact(src, compactMap, newCount, v => (Vector3)v)); break;
                         default: target.SetUVs(ch, Compact(src, compactMap, newCount, v => v)); break;
@@ -1247,11 +1249,11 @@ namespace SashaRX.UnityMeshLab
                     if (compactMap[i] >= 0) result[compactMap[i]] = src[i];
                 return result;
             }
-        }
 
-        static bool Vec4Equal(Vector4 a, Vector4 b, float eps)
-            => Mathf.Abs(a.x - b.x) <= eps && Mathf.Abs(a.y - b.y) <= eps
-            && Mathf.Abs(a.z - b.z) <= eps && Mathf.Abs(a.w - b.w) <= eps;
+            static bool Vec4Equal(Vector4 a, Vector4 b, float eps)
+                => Mathf.Abs(a.x - b.x) <= eps && Mathf.Abs(a.y - b.y) <= eps
+                && Mathf.Abs(a.z - b.z) <= eps && Mathf.Abs(a.w - b.w) <= eps;
+        }
 
         static long SpatialKey(Vector3 v, float cellSize)
         {
