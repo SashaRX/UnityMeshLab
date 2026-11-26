@@ -1084,7 +1084,8 @@ namespace SashaRX.UnityMeshLab
                             && SaveSupersedesEdit(p.entry, p.resultMesh) && !whole.Contains(p.entry.fbxMesh.name))
                         .Select(p => p.entry));
                     // Read before the write: its import replaces the file meshes these compare with.
-                    var editsLosingVertices = new HashSet<MeshEntry>(superseded.Where(EditChangesFileVertices));
+                    // A variant never reports a released edit.
+                    var editsLosingVertices = new HashSet<MeshEntry>(isVariant ? Enumerable.Empty<MeshEntry>() : superseded.Where(EditChangesFileVertices));
                     if (!isVariant) MarkSceneEditsSaved(sourceFbxPath, reshaped.Concat(superseded), _ => true);
 
                     bool written, writtenOnly = false;
@@ -1159,7 +1160,8 @@ namespace SashaRX.UnityMeshLab
         }
 
         // Whether a released edit had vertex changes of its own (a cleanup that removed or merged
-        // vertices) that the file does not take. One on the file's vertices loses nothing.
+        // vertices) that the file does not take. One on the file's vertices loses nothing. A file
+        // mesh that cannot be read keeps the warning: nothing shows the edit loses nothing.
         internal static bool EditChangesFileVertices(MeshEntry e)
         {
             Mesh file = null;
@@ -1168,6 +1170,11 @@ namespace SashaRX.UnityMeshLab
             {
                 file = MeshAccess.Readable(e.fbxMesh, out isCopy);
                 return file == null || !SameVertices(file, e.sceneEditMesh);
+            }
+            catch (Exception ex)
+            {
+                UvtLog.Verbose($"[FBX Export] '{e.sceneEditMesh.name}': the file's vertices could not be read ({ex.Message}).");
+                return true;
             }
             finally { if (isCopy) UnityEngine.Object.DestroyImmediate(file); }
         }
