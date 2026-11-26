@@ -159,8 +159,9 @@ namespace SashaRX.UnityMeshLab.Tests
                 typeof(UvToolHub).GetMethod("SwitchTool", flags).Invoke(hub, new object[] { to });
 
                 Assert.AreEqual(UvCanvasView.PreviewMode.Checker, canvas.CurrentPreviewMode, "The checker stays picked on the new tab.");
-                Assert.IsTrue((bool)typeof(UvToolHub).GetField("reapplyPreview", flags).GetValue(hub),
-                    "The next frame applies it to what the new tab shows.");
+                var reapply = typeof(UvToolHub).GetField("reapplyPreview", flags);
+                Assert.IsNotNull(reapply, "UvToolHub.reapplyPreview was renamed; update this test.");
+                Assert.IsTrue((bool)reapply.GetValue(hub), "The next frame applies it to what the new tab shows.");
             }
             finally { if (hub != null) UnityEngine.Object.DestroyImmediate(hub); }
         }

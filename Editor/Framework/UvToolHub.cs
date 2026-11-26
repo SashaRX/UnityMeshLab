@@ -1745,7 +1745,8 @@ namespace SashaRX.UnityMeshLab
             DeactivateTool();
             activeToolIndex = index;
             ActivateTool();
-            if (canvas != null && mode != UvCanvasView.PreviewMode.Off && canvas.CurrentPreviewMode == UvCanvasView.PreviewMode.Off)
+            if (canvas != null && ActiveTool != null && mode != UvCanvasView.PreviewMode.Off
+                && canvas.CurrentPreviewMode == UvCanvasView.PreviewMode.Off)
             {
                 canvas.CurrentPreviewMode = mode;
                 reapplyPreview = true;
