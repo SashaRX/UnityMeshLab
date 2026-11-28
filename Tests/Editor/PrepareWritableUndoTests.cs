@@ -77,6 +77,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 foreach (var e in entries)
                 {
                     Assert.IsTrue(MeshHygieneUtility.PrepareWritable(e, "Optimize Mesh", out var mesh));
+                    owned.Add(mesh);
                     Assert.IsTrue(MeshOptimizer.Optimize(mesh).ok);
                 }
             Assert.Less(watch.ElapsedMilliseconds, 10000, "Undo must not make each rewritten mesh cost more than the last");
