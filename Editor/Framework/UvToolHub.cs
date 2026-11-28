@@ -1738,9 +1738,19 @@ namespace SashaRX.UnityMeshLab
         void SwitchTool(int index)
         {
             if (index == activeToolIndex) return;
+            // The scene preview the user picked stays on across tabs. The deactivation takes it
+            // off the renderers; the next frame applies it to what the new tab shows, falling
+            // back to a channel those meshes have. A tab that sets its own mode keeps it.
+            var mode = canvas != null ? canvas.CurrentPreviewMode : UvCanvasView.PreviewMode.Off;
             DeactivateTool();
             activeToolIndex = index;
             ActivateTool();
+            if (canvas != null && ActiveTool != null && mode != UvCanvasView.PreviewMode.Off
+                && canvas.CurrentPreviewMode == UvCanvasView.PreviewMode.Off)
+            {
+                canvas.CurrentPreviewMode = mode;
+                reapplyPreview = true;
+            }
             Repaint();
         }
 
@@ -2036,7 +2046,7 @@ namespace SashaRX.UnityMeshLab
             public Material tempMat;
         }
         readonly List<LightmapBackup> lightmapBackups = new List<LightmapBackup>();
-        Material lightmapPreviewMat;
+        Shader lightmapPreviewShader;
 
         /// <summary>
         /// Resolves checker, shell and lightmap layers across open windows without altering the live preview.
@@ -2186,7 +2196,14 @@ namespace SashaRX.UnityMeshLab
 
         void ApplyLightmapPreview()
         {
-            foreach (var e in ctx.ForLod(ctx.PreviewLod)) ApplyLightmapPreviewEntry(e);
+            try {
+                foreach (var e in ctx.ForLod(ctx.PreviewLod)) ApplyLightmapPreviewEntry(e);
+            }
+            catch {
+                // Roll back this window and turn the failed mode off before the next canvas update.
+                RestoreLightmapPreviewSafe();
+                throw;
+            }
             if (lightmapBackups.Count == 0) UvtLog.Warn("[Lightmap] No lightmapped meshes found.");
         }
 
@@ -2205,15 +2222,11 @@ namespace SashaRX.UnityMeshLab
             if (lmIdx < 0 || lmIdx >= LightmapSettings.lightmaps.Length) return;
             var lmData = LightmapSettings.lightmaps[lmIdx];
             if (lmData.lightmapColor == null) return;
-            if (lightmapPreviewMat == null)
-            {
-                var shader = Shader.Find("Unlit/Texture");
-                if (shader == null) return;
-                lightmapPreviewMat = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
-            }
+            if (lightmapPreviewShader == null) lightmapPreviewShader = Shader.Find("Unlit/Texture");
+            if (lightmapPreviewShader == null) return;
             Mesh tempMesh = CreateLightmapPreviewMesh(ctx.DMesh(e), e.renderer.lightmapScaleOffset);
             if (tempMesh == null) return;
-            var mat = new Material(lightmapPreviewMat) { hideFlags = HideFlags.HideAndDontSave };
+            var mat = new Material(lightmapPreviewShader) { hideFlags = HideFlags.HideAndDontSave };
             mat.mainTexture = lmData.lightmapColor;
             mat.mainTextureScale = Vector2.one;
             mat.mainTextureOffset = Vector2.zero;

@@ -9,6 +9,8 @@ using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.TestTools;
 using UnityEditor;
+using UnityEditor.SceneManagement;
+using UnityEngine.SceneManagement;
 using Object = UnityEngine.Object;
 
 namespace SashaRX.UnityMeshLab.Tests
@@ -1147,6 +1149,110 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void LightmapReadFailureOnTabReapplyRestoresTheWholeLod()
+        {
+            var group = Group(true, out var first, out var second);
+            var renderers = new[] { first, second };
+            group.SetLODs(new[] { new LOD(.1f, renderers) });
+            var other = Standalone("Other window");
+            var meshes = renderers.Select(r => r.GetComponent<MeshFilter>().sharedMesh).ToArray();
+            first.sharedMaterials = new[] { first.sharedMaterial, null, second.sharedMaterial };
+            var materials = renderers.Select(r => r.sharedMaterials).ToArray();
+            var previousLightmaps = LightmapSettings.lightmaps;
+            var activeScene = SceneManager.GetActiveScene();
+            string folder = "Assets/__LightmapRollback_" + System.Guid.NewGuid().ToString("N");
+            AssetDatabase.CreateFolder("Assets", folder.Substring("Assets/".Length));
+            var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
+            UvToolHub otherHub = null;
+            try {
+                SceneManager.MoveGameObjectToScene(group.gameObject, scene);
+                for (int i = 0; i < renderers.Length; ++i) {
+                    AssetDatabase.CreateAsset(meshes[i], $"{folder}/mesh{i}.asset");
+                    owned.Remove(meshes[i]);
+                    AssetDatabase.CreateAsset(materials[i][0], $"{folder}/material{i}.mat");
+                    owned.Remove(materials[i][0]);
+                }
+
+                var ctx = Open(group);
+                var canvas = Get<UvCanvasView>(hub, "canvas");
+                otherHub = ScriptableObject.CreateInstance<UvToolHub>();
+                otherHub.DiagnosticContext.RefreshStandalone(other);
+                AssignLightmap(first, second, other);
+                var otherAuthoredMesh = other.GetComponent<MeshFilter>().sharedMesh;
+                var otherAuthoredMaterial = other.sharedMaterial;
+                Call(otherHub, "ApplyPreviewMode", UvCanvasView.PreviewMode.Lightmap);
+                var otherMesh = other.GetComponent<MeshFilter>().sharedMesh;
+                var otherMaterial = other.sharedMaterial;
+                Assert.AreNotSame(otherAuthoredMesh, otherMesh);
+                Assert.AreNotSame(otherAuthoredMaterial, otherMaterial);
+
+                var previewShader = Shader.Find("Unlit/Texture");
+                Material[] LightmapMaterials() => Resources.FindObjectsOfTypeAll<Material>()
+                    .Where(m => m.shader == previewShader && m.hideFlags == HideFlags.HideAndDontSave).ToArray();
+                var liveMaterials = LightmapMaterials();
+                Call(hub, "ApplyPreviewMode", UvCanvasView.PreviewMode.Lightmap);
+                for (int i = 0; i < renderers.Length; ++i) {
+                    Assert.AreNotSame(meshes[i], renderers[i].GetComponent<MeshFilter>().sharedMesh);
+                    Assert.AreNotSame(materials[i][0], renderers[i].sharedMaterial);
+                }
+                Call(hub, "SelectToolById", "cleanup");
+                CollectionAssert.AreEqual(renderers, ctx.ForLod(ctx.PreviewLod).Select(e => e.renderer));
+                Assert.AreSame(meshes[0], first.GetComponent<MeshFilter>().sharedMesh);
+                Assert.AreEqual(UvCanvasView.PreviewMode.Lightmap, canvas.CurrentPreviewMode);
+
+                // Only the working input for the second renderer is invalid. Its authored mesh stays on the filter.
+                var bad = new Mesh { name = "Broken lightmap input" };
+                owned.Add(bad);
+                bad.SetVertexBufferParams(3, new UnityEngine.Rendering.VertexAttributeDescriptor(UnityEngine.Rendering.VertexAttribute.Normal));
+                ctx.MeshEntries.Find(e => e.renderer == second).repackedMesh = bad;
+                var liveMeshes = Resources.FindObjectsOfTypeAll<Mesh>();
+
+                var error = Assert.Throws<TargetInvocationException>(() => Call(hub, "CollectCanvasEntries")).InnerException;
+                Assert.IsInstanceOf<System.InvalidOperationException>(error);
+                StringAssert.Contains("Broken lightmap input", error.Message);
+                StringAssert.Contains("no Position", error.Message);
+                Assert.AreEqual(UvCanvasView.PreviewMode.Off, canvas.CurrentPreviewMode);
+                AssertAuthoredReferences(renderers, meshes, materials);
+                CollectionAssert.AreEquivalent(liveMeshes, Resources.FindObjectsOfTypeAll<Mesh>());
+                CollectionAssert.AreEquivalent(liveMaterials, LightmapMaterials());
+
+                // The bad input is still present. Ordinary canvas updates must finish without another attempt.
+                for (int frame = 0; frame < 3; ++frame) Call(hub, "CollectCanvasEntries");
+                Assert.IsTrue(otherMesh && otherMaterial);
+                Assert.AreSame(otherMesh, other.GetComponent<MeshFilter>().sharedMesh);
+                Assert.AreSame(otherMaterial, other.sharedMaterial);
+                Assert.IsTrue(PreviewSafetyGuard.HasLightmapPreviewLayers);
+
+                string path = folder + "/rollback.unity";
+                Assert.IsTrue(EditorSceneManager.SaveScene(scene, path));
+                Assert.IsFalse(PreviewSafetyGuard.HasLightmapPreviewLayers, "Saving releases the other window's remaining layer.");
+                Assert.AreSame(otherAuthoredMesh, other.GetComponent<MeshFilter>().sharedMesh);
+                Assert.AreSame(otherAuthoredMaterial, other.sharedMaterial);
+                Assert.IsTrue(EditorSceneManager.CloseScene(scene, true));
+                scene = EditorSceneManager.OpenScene(path, OpenSceneMode.Additive);
+                var saved = scene.GetRootGameObjects().Single().GetComponent<LODGroup>().GetLODs()[0].renderers;
+                AssertAuthoredReferences(saved, meshes, materials);
+            }
+            finally {
+                if (otherHub) Object.DestroyImmediate(otherHub);
+                if (hub) Object.DestroyImmediate(hub);
+                if (activeScene.isLoaded) SceneManager.SetActiveScene(activeScene);
+                if (scene.isLoaded) EditorSceneManager.CloseScene(scene, true);
+                LightmapSettings.lightmaps = previousLightmaps;
+                AssetDatabase.DeleteAsset(folder);
+            }
+        }
+
+        static void AssertAuthoredReferences(Renderer[] renderers, Mesh[] meshes, Material[][] materials)
+        {
+            Assert.AreEqual(meshes.Length, renderers.Length);
+            for (int i = 0; i < renderers.Length; ++i) {
+                Assert.AreSame(meshes[i], renderers[i].GetComponent<MeshFilter>().sharedMesh);
+                CollectionAssert.AreEqual(materials[i], renderers[i].sharedMaterials);
+            }
+        }
+
+        [Test]
         public void TransferWorkflowCollectsOnlyTheRequestedLightmapLayer()
         {
             Group(true, out var renderer, out var other);
@@ -1536,6 +1642,25 @@ namespace SashaRX.UnityMeshLab.Tests
             SwitchLod(0);
             Assert.That(ShowsChecker(lod0), Is.True);
             Assert.That(ShowsChecker(lod1), Is.False);
+        }
+
+        [Test]
+        public void CheckerStaysOnTheRenderersAcrossATabSwitch()
+        {
+            var group = Group(lod1HasUv1: true, out var lod0, out _);
+            Open(group);
+            var canvas = Get<UvCanvasView>(hub, "canvas");
+            Call(hub, "ApplyPreviewMode", UvCanvasView.PreviewMode.Checker);
+            Assert.That(ShowsChecker(lod0), Is.True);
+
+            var tools = Get<List<IUvTool>>(hub, "tools");
+            int cleanup = tools.FindIndex(t => t is CleanupTool);
+            Assume.That(cleanup, Is.GreaterThanOrEqualTo(0), "the Cleanup tab must be enabled");
+            Call(hub, "SwitchTool", cleanup);
+            Call(hub, "CollectCanvasEntries");
+
+            Assert.That(canvas.CurrentPreviewMode, Is.EqualTo(UvCanvasView.PreviewMode.Checker), "the picked mode survives the tab switch");
+            Assert.That(ShowsChecker(lod0), Is.True, "the next frame puts the checker back on the renderers the new tab shows");
         }
 
         [UnityTest]
